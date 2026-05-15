@@ -1,267 +1,189 @@
 package com.panel.app;
 
-import android.app.Activity;
-import android.content.pm.ActivityInfo;
-import android.os.Bundle;
-import android.os.PowerManager;
-import android.view.Window;
-import android.view.WindowManager;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
-import android.location.Location;
-import android.location.LocationListener;
-import android.location.LocationManager;
-import android.content.Context;
 import android.Manifest;
+import android.app.Activity;
 import android.content.pm.PackageManager;
-import androidx.core.app.ActivityCompat;
-import android.widget.TextView;
-import android.widget.LinearLayout;
-import android.widget.FrameLayout;
-import android.graphics.SurfaceTexture;
-import android.hardware.camera2.CameraCaptureSession;
-import android.hardware.camera2.CameraCharacteristics;
-import android.hardware.camera2.CameraDevice;
-import android.hardware.camera2.CameraManager;
-import android.hardware.camera2.CaptureRequest;
-import android.view.Surface;
-import android.view.TextureView;
+import android.os.Bundle;
 import android.view.View;
-import android.util.Log;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
+import android.view.WindowManager;
+import android.webkit.GeolocationPermissions;
+import android.webkit.PermissionRequest;
+import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.widget.Toast;
 
-public class MainActivity extends Activity implements LocationListener, SensorEventListener {
-    private static final String TAG = "PanelApp";
-    private PowerManager.WakeLock wakeLock;
-    private LocationManager locationManager;
-    private SensorManager sensorManager;
-    private Sensor accelerometer;
-    private TextView speedText;
-    private TextView coordText;
-    private TextView headingText;
-    private double lastLat, lastLon;
-    private long lastTime;
-    private float currentSpeed;
-    private TextureView frontCameraView;
-    private TextureView backCameraView;
-    private CameraDevice frontCamera;
-    private CameraDevice backCamera;
-    private Semaphore cameraOpenCloseLock = new Semaphore(1);
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
+import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.ServerSocket;
+import java.net.Socket;
+
+public class MainActivity extends Activity {
+    private static final int PERMISSION_REQUEST_CODE = 100;
+    private WebView webView;
+    private ServerSocket serverSocket;
+    private int serverPort;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        
-        requestWindowFeature(Window.FEATURE_NO_TITLE);
-        getWindow().setFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
-            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
-            WindowManager.LayoutParams.FLAG_FULLSCREEN);
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        getWindow().setFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        | View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
 
-        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PanelApp::WakeLock");
-        wakeLock.acquire();
+        setContentView(R.layout.activity_main);
 
-        LinearLayout mainLayout = new LinearLayout(this);
-        mainLayout.setOrientation(LinearLayout.HORIZONTAL);
-        mainLayout.setBackgroundColor(0xFF1A1A1A);
+        webView = findViewById(R.id.webView);
 
-        LinearLayout leftPanel = new LinearLayout(this);
-        leftPanel.setOrientation(LinearLayout.VERTICAL);
-        leftPanel.setPadding(40, 40, 40, 40);
-
-        speedText = new TextView(this);
-        speedText.setTextSize(120);
-        speedText.setTextColor(0xFF00FF00);
-        speedText.setText("0.0");
-        leftPanel.addView(speedText);
-
-        TextView unitText = new TextView(this);
-        unitText.setTextSize(32);
-        unitText.setTextColor(0xFF888888);
-        unitText.setText("km/h");
-        leftPanel.addView(unitText);
-
-        LinearLayout infoPanel = new LinearLayout(this);
-        infoPanel.setOrientation(LinearLayout.VERTICAL);
-        infoPanel.setPadding(0, 40, 0, 0);
-
-        coordText = new TextView(this);
-        coordText.setTextSize(20);
-        coordText.setTextColor(0xFFFFFFFF);
-        coordText.setText("坐标: --");
-        infoPanel.addView(coordText);
-
-        headingText = new TextView(this);
-        headingText.setTextSize(20);
-        headingText.setTextColor(0xFFFFFFFF);
-        headingText.setText("方向: --");
-        infoPanel.addView(headingText);
-
-        leftPanel.addView(infoPanel);
-
-        LinearLayout rightPanel = new LinearLayout(this);
-        rightPanel.setOrientation(LinearLayout.VERTICAL);
-        rightPanel.setWeightSum(2);
-
-        frontCameraView = new TextureView(this);
-        frontCameraView.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.0f));
-        rightPanel.addView(frontCameraView);
-
-        backCameraView = new TextureView(this);
-        backCameraView.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.0f));
-        rightPanel.addView(backCameraView);
-
-        mainLayout.addView(leftPanel, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.MATCH_PARENT));
-        mainLayout.addView(rightPanel, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.0f));
-
-        setContentView(mainLayout);
-
-        initSensors();
-        requestPermissions();
+        checkPermissionsAndStart();
     }
 
-    private void initSensors() {
-        locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
-        sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
-        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-    }
-
-    private void requestPermissions() {
-        String[] permissions = {
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.CAMERA
+    private void checkPermissionsAndStart() {
+        String[] needed = {
+                Manifest.permission.CAMERA,
+                Manifest.permission.RECORD_AUDIO,
+                Manifest.permission.ACCESS_FINE_LOCATION
         };
-        ActivityCompat.requestPermissions(this, permissions, 1);
+
+        boolean allGranted = true;
+        for (String p : needed) {
+            if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+                allGranted = false;
+                break;
+            }
+        }
+
+        if (allGranted) {
+            startLocalServer();
+        } else {
+            ActivityCompat.requestPermissions(this, needed, PERMISSION_REQUEST_CODE);
+        }
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            startLocationUpdates();
-        }
-    }
-
-    private void startLocationUpdates() {
-        try {
-            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 100, 0, this);
-            locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 100, 0, this);
-        } catch (SecurityException e) {
-            Log.e(TAG, "Permission denied", e);
-        }
-    }
-
-    @Override
-    public void onLocationChanged(Location location) {
-        double lat = location.getLatitude();
-        double lon = location.getLongitude();
-        
-        double[] gcj02 = wgs84ToGcj02(lat, lon);
-        
-        long now = System.currentTimeMillis();
-        if (lastTime > 0) {
-            float distance = distanceBetween(lastLat, lastLon, gcj02[0], gcj02[1]);
-            double timeDiff = (now - lastTime) / 1000.0;
-            if (timeDiff > 0) {
-                currentSpeed = (distance / 1000.0f) / ((float)timeDiff / 3600.0f);
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            for (int i = 0; i < grantResults.length; i++) {
+                if (grantResults[i] != PackageManager.PERMISSION_GRANTED) {
+                    Toast.makeText(this, "权限被拒绝: " + permissions[i], Toast.LENGTH_LONG).show();
+                }
             }
+            startLocalServer();
         }
-        
-        lastLat = gcj02[0];
-        lastLon = gcj02[1];
-        lastTime = now;
+    }
 
-        runOnUiThread(() -> {
-            speedText.setText(String.format("%.1f", currentSpeed));
-            coordText.setText(String.format("坐标: %.6f, %.6f", gcj02[0], gcj02[1]));
-            if (location.hasBearing()) {
-                headingText.setText(String.format("方向: %.0f°", location.getBearing()));
+    private void setupWebView() {
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setGeolocationEnabled(true);
+        settings.setAllowFileAccess(true);
+        settings.setAllowContentAccess(true);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+
+        webView.setWebViewClient(new WebViewClient());
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                request.grant(request.getResources());
+            }
+
+            @Override
+            public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
+                callback.invoke(origin, true, false);
             }
         });
+
+        webView.addJavascriptInterface(new WebAppInterface(this), "Android");
+        webView.loadUrl("http://localhost:" + serverPort + "/dashcam.html");
     }
 
-    public double[] wgs84ToGcj02(double lat, double lon) {
-        double a = 6378137.0;
-        double ee = 0.00669437999014;
-        double dLat = transformLat(lon - 105.0, lat - 35.0);
-        double dLon = transformLon(lon - 105.0, lat - 35.0);
-        double radLat = lat / 180.0 * Math.PI;
-        double magic = Math.sin(radLat);
-        magic = 1 - ee * magic * magic;
-        double sqrtMagic = Math.sqrt(magic);
-        dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * Math.PI);
-        dLon = (dLon * 180.0) / (a / sqrtMagic * Math.cos(radLat) * Math.PI);
-        return new double[]{lat + dLat, lon + dLon};
+    private void startLocalServer() {
+        new Thread(() -> {
+            try {
+                serverSocket = new ServerSocket(0, 0, java.net.InetAddress.getByName("127.0.0.1"));
+                serverPort = serverSocket.getLocalPort();
+
+                runOnUiThread(this::setupWebView);
+
+                while (!serverSocket.isClosed()) {
+                    Socket client = serverSocket.accept();
+                    handleRequest(client);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
     }
 
-    private double transformLat(double x, double y) {
-        double ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y;
-        ret += 0.2 * Math.sqrt(Math.abs(x));
-        ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
-        ret += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
-        ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320.0 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
-        return ret;
-    }
+    private void handleRequest(Socket client) {
+        try {
+            BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream()));
+            String requestLine = reader.readLine();
+            if (requestLine == null) { reader.close(); client.close(); return; }
 
-    private double transformLon(double x, double y) {
-        double ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
-        ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
-        ret += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
-        ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
-        return ret;
-    }
+            String path = requestLine.split(" ")[1];
 
-    private float distanceBetween(double lat1, double lon1, double lat2, double lon2) {
-        double earthRadius = 6371000;
-        double dLat = Math.toRadians(lat2 - lat1);
-        double dLon = Math.toRadians(lon2 - lon1);
-        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-            Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
-            Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return (float) (earthRadius * c);
-    }
+            OutputStream os = client.getOutputStream();
 
-    @Override
-    public void onProviderEnabled(String provider) {}
+            if ("/dashcam.html".equals(path)) {
+                String html = readAsset("dashcam.html");
+                byte[] data = html.getBytes("UTF-8");
+                os.write("HTTP/1.1 200 OK\r\n".getBytes());
+                os.write("Content-Type: text/html; charset=UTF-8\r\n".getBytes());
+                os.write(("Content-Length: " + data.length + "\r\n").getBytes());
+                os.write("Connection: close\r\n\r\n".getBytes());
+                os.write(data);
+            } else {
+                os.write("HTTP/1.1 404 Not Found\r\n\r\n".getBytes());
+            }
 
-    @Override
-    public void onProviderDisabled(String provider) {}
-
-    @Override
-    public void onStatusChanged(String provider, int status, Bundle extras) {}
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        sensorManager.registerListener(this, accelerometer, SensorManager.SENSOR_DELAY_UI);
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            startLocationUpdates();
+            os.flush();
+            os.close();
+            reader.close();
+            client.close();
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
-    @Override
-    protected void onPause() {
-        super.onPause();
-        sensorManager.unregisterListener(this);
-        locationManager.removeUpdates(this);
+    private String readAsset(String filename) throws Exception {
+        InputStream is = getAssets().open(filename);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = is.read(buf)) != -1) baos.write(buf, 0, n);
+        is.close();
+        return baos.toString("UTF-8");
     }
 
     @Override
-    public void onSensorChanged(SensorEvent event) {}
-
-    @Override
-    public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+    public void onBackPressed() {
+        moveTaskToBack(true);
+    }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (wakeLock != null && wakeLock.isHeld()) {
-            wakeLock.release();
+        if (serverSocket != null) {
+            try { serverSocket.close(); } catch (Exception e) {}
         }
     }
 }

@@ -1,25 +1,15 @@
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath 'com.android.tools.build:gradle:8.1.0'
-    }
-}
-
 plugins {
     id 'com.android.application'
 }
 
 android {
     namespace 'com.panel.app'
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.panel.app"
         minSdk 24
-        targetSdk 34
+        targetSdk 35
         versionCode 1
         versionName "1.0"
     }
