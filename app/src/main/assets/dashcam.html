@@ -9,7 +9,7 @@
 html, body {
   height: 100%; width: 100%; overflow: hidden;
   font-family: -apple-system, "PingFang SC", "Helvetica Neue", Roboto, sans-serif;
-  background: #000; color: #fff;
+  background: transparent; color: #fff;
   user-select: none; -webkit-user-select: none;
 }
 .container {
@@ -18,22 +18,13 @@ html, body {
 }
 .camera-area {
   height: 35vh; flex-shrink: 0; position: relative; overflow: hidden;
-  background: #111;
-}
-#video {
-  width: 100%; height: 100%; object-fit: cover;
+  background: transparent;
 }
 .camera-label {
   position: absolute; top: 12px; left: 14px;
   font-size: 13px; font-weight: 600;
   background: rgba(0,0,0,.5); padding: 4px 10px; border-radius: 12px;
 }
-.camera-error {
-  position: absolute; bottom: 16px; left: 16px; right: 16px;
-  text-align: center; font-size: 14px; color: #ffd60a;
-  background: rgba(0,0,0,.6); padding: 10px 14px; border-radius: 10px;
-}
-.camera-error.hidden { display: none; }
 .camera-flip {
   position: absolute; top: 44px; left: 14px; z-index: 10;
   font-size: 18px; cursor: pointer;
@@ -43,9 +34,21 @@ html, body {
   -webkit-tap-highlight-color: transparent;
 }
 .camera-flip:active { background: rgba(255,255,255,.25); }
+.rec-indicator {
+  position: absolute; top: 12px; right: 14px;
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600;
+  background: rgba(0,0,0,.5); padding: 4px 10px; border-radius: 12px;
+}
+.rec-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: #ff3b30;
+  display: none;
+}
+.rec-dot.active { display: inline-block; animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
 .clock-area {
   flex: 1; display: flex; flex-direction: column;
-  background: #000; padding: 8px 20px 0;
+  background: rgba(0,0,0,.65); padding: 8px 20px 0;
 }
 .clock-content {
   flex: 1; display: flex; flex-direction: column;
@@ -166,10 +169,12 @@ html, body {
 <body>
 <div class="container">
   <div class="camera-area">
-    <video id="video" autoplay muted playsinline></video>
-    <div class="camera-label">⏺ 行车记录 <span id="audioStatus" style="font-weight:400;opacity:.7">🔇</span></div>
+    <div class="camera-label">⏺ 行车记录</div>
     <button class="camera-flip" id="flipBtn">🔄</button>
-    <div class="camera-error hidden" id="cameraError">初始化中...</div>
+    <div class="rec-indicator">
+      <span class="rec-dot" id="recDot"></span>
+      <span id="recIndicator">待机</span>
+    </div>
   </div>
   <div class="clock-area">
     <div class="clock-content">
@@ -218,11 +223,9 @@ html, body {
   </div>
 </div>
 
-<canvas id="photoCanvas" style="display:none"></canvas>
 <div class="toast hidden" id="toast"></div>
 
 <script>
-var video = document.getElementById('video');
 var clockDisplay = document.getElementById('clockDisplay');
 var clockDate = document.getElementById('clockDate');
 var speedDisplay = document.getElementById('speedDisplay');
@@ -235,34 +238,28 @@ var recordBtn = document.getElementById('recordBtn');
 var recordLabel = document.getElementById('recordLabel');
 var photoBtn = document.getElementById('photoBtn');
 var flipBtn = document.getElementById('flipBtn');
-var photoCanvas = document.getElementById('photoCanvas');
-var audioStatus = document.getElementById('audioStatus');
+var recDot = document.getElementById('recDot');
+var recIndicator = document.getElementById('recIndicator');
 var settingsBtn = document.getElementById('settingsBtn');
 var settingsOverlay = document.getElementById('settingsOverlay');
 var settingsSave = document.getElementById('settingsSave');
 var dirTypeSelect = document.getElementById('dirType');
 var subDirInput = document.getElementById('subDir');
-var cameraError = document.getElementById('cameraError');
 var toast = document.getElementById('toast');
 
-var recCanvas = document.createElement('canvas');
-var recCtx = recCanvas.getContext('2d');
-var recInterval = null;
-var canvasStream = null;
+var watchId = null;
 var toastTimer = null;
+var recording = false;
+var recStartTime = null;
+var recTimer = null;
+var currentLat = 0;
+var currentLng = 0;
 
 function showToast(msg, duration) {
   if (toastTimer) clearTimeout(toastTimer);
   toast.textContent = msg;
   toast.classList.remove('hidden');
   toastTimer = setTimeout(function () { toast.classList.add('hidden'); }, duration || 4000);
-}
-
-function showError(msg) {
-  if (cameraError) { cameraError.textContent = msg; cameraError.classList.remove('hidden'); }
-}
-function hideError() {
-  if (cameraError) cameraError.classList.add('hidden');
 }
 
 var savedConfig = null;
@@ -291,16 +288,6 @@ function saveSettings() {
     localStorage.setItem('dashcam_subDir', savedConfig.subDir);
   } catch (e) {}
 }
-
-var recording = false;
-var recStartTime = null;
-var recTimer = null;
-var cameraStream = null;
-var watchId = null;
-var autoRestart = false;
-var currentLat = 0;
-var currentLng = 0;
-var currentFacingMode = 'environment';
 
 var GCJ_PI = 3.1415926535897932384626;
 var GCJ_A = 6378245.0;
@@ -340,76 +327,6 @@ function updateClock() {
   clockDate.textContent = now.getFullYear() + '年' + (now.getMonth() + 1) + '月' + now.getDate() + '日 周' + dow;
 }
 
-var cameraTimeout = null;
-var pendingRestart = false;
-
-function startCamera() {
-  showError('⏳ 正在请求摄像头...');
-  cameraTimeout = setTimeout(function () { showError('⚠️ 摄像头请求超时'); }, 10000);
-  tryCamera(true);
-}
-
-function tryCamera(withAudio) {
-  var constraints = {
-    video: {
-      facingMode: currentFacingMode,
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
-      frameRate: { ideal: 30 }
-    }
-  };
-  if (withAudio) constraints.audio = true;
-  navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
-    clearTimeout(cameraTimeout);
-    cameraStream = stream;
-    video.srcObject = stream;
-    hideError();
-    var audioTracks = stream.getAudioTracks();
-    audioStatus.textContent = audioTracks.length > 0 ? '🎤 音频就绪' : '🎥 仅视频';
-    if (pendingRestart) {
-      pendingRestart = false;
-      setTimeout(function checkRestart() {
-        if (video.videoWidth && video.videoHeight && cameraStream) {
-          startRecording();
-        } else {
-          setTimeout(checkRestart, 300);
-        }
-      }, 500);
-    }
-  }).catch(function (err) {
-    if (withAudio && err.name !== 'NotAllowedError' && err.name !== 'PermissionDeniedError') {
-      tryCamera(false);
-      return;
-    }
-    clearTimeout(cameraTimeout);
-    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-      showError('⚠️ 摄像头/麦克风权限被拒绝');
-    } else if (err.name === 'NotFoundError') {
-      showError('⚠️ 未找到摄像头');
-    } else {
-      showError('⚠️ 无法打开摄像头: ' + (err.message || ''));
-      setTimeout(startCamera, 3000);
-    }
-  });
-}
-
-function switchCamera() {
-  if (!cameraStream) return;
-  var wasRecording = recording;
-  if (wasRecording) {
-    if (recInterval) { clearInterval(recInterval); recInterval = null; }
-    canvasStream = null;
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
-    pendingRestart = true;
-  }
-  cameraStream.getTracks().forEach(function (t) { t.stop(); });
-  cameraStream = null;
-  video.srcObject = null;
-  currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
-  showError('⏳ 切换摄像头...');
-  setTimeout(function () { tryCamera(true); }, 400);
-}
-
 function startGPS() {
   if (!navigator.geolocation) {
     gpsText.textContent = '不支持GPS';
@@ -437,223 +354,49 @@ function startGPS() {
 }
 
 function takePhoto() {
-  if (!cameraStream || !video.videoWidth) return;
-  var w = video.videoWidth;
-  var h = video.videoHeight;
-  photoCanvas.width = w;
-  photoCanvas.height = h;
-  var ctx = photoCanvas.getContext('2d');
-  ctx.drawImage(video, 0, 0, w, h);
-  var gcj = wgs84ToGcj02(currentLat || 0, currentLng || 0);
-  ctx.fillStyle = 'rgba(0,0,0,.5)';
-  ctx.fillRect(0, h - 52, w, 52);
-  ctx.fillStyle = '#fff';
-  ctx.font = Math.max(14, Math.round(w / 30)) + 'px sans-serif';
-  ctx.textBaseline = 'bottom';
-  var now = new Date();
-  var timeStr = now.toLocaleString('zh-CN', { hour12: false });
-  ctx.fillText(timeStr, 14, h - 14);
-  ctx.textAlign = 'right';
-  ctx.fillText(gcj.lat.toFixed(6) + ', ' + gcj.lng.toFixed(6), w - 14, h - 14);
-  ctx.textAlign = 'left';
-  var btn = photoBtn;
-  btn.style.opacity = '0.5';
-  btn.textContent = '⏳ 保存中...';
-  photoCanvas.toBlob(function (blob) {
-    if (!blob) { resetPhotoBtn(); return; }
-    var ts = now.toISOString().replace(/[:.]/g, '-');
-    var fileName = 'photo_' + ts + '.jpg';
-    if (window.Android) {
-      var cfg = getSaveConfig();
-      var reader = new FileReader();
-      reader.onloadend = function () {
-        var path = Android.saveFile(reader.result.split(',')[1], fileName, cfg.dirType, cfg.subDir);
-        if (path) {
-          btn.textContent = '✅ 已保存';
-          showToast('已保存到: ' + path, 5000);
-        } else {
-          btn.textContent = '❌ 保存失败';
-          showToast('❌ 保存失败', 5000);
-        }
-        btn.style.opacity = '1';
-        setTimeout(resetPhotoBtn, 2500);
-      };
-      reader.readAsDataURL(blob);
-    } else {
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      a.click();
-      setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-      resetPhotoBtn();
-    }
-  }, 'image/jpeg', 0.92);
-}
-function resetPhotoBtn() {
-  photoBtn.innerHTML = '<span class="icon">📸</span> 拍照';
-  photoBtn.style.opacity = '1';
-}
-
-function drawOverlayFrame() {
-  if (!recording || !video.videoWidth) return;
-  var cw = recCanvas.width, ch = recCanvas.height;
-  var vw = video.videoWidth, vh = video.videoHeight;
-  var scale = Math.max(cw / vw, ch / vh);
-  var sw = cw / scale, sh = ch / scale;
-  var sx = (vw - sw) / 2, sy = (vh - sh) / 2;
-  recCtx.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
-  var barH = 28;
-  var fontSize = Math.max(12, Math.round(barH * 0.5));
-  var gcj = wgs84ToGcj02(currentLat || 0, currentLng || 0);
-  var now = new Date();
-  var timeStr = now.getFullYear() + '-' +
-    String(now.getMonth() + 1).padStart(2, '0') + '-' +
-    String(now.getDate()).padStart(2, '0') + ' ' +
-    String(now.getHours()).padStart(2, '0') + ':' +
-    String(now.getMinutes()).padStart(2, '0') + ':' +
-    String(now.getSeconds()).padStart(2, '0');
-  recCtx.fillStyle = 'rgba(0,0,0,.55)';
-  recCtx.fillRect(0, ch - barH, cw, barH);
-  recCtx.fillStyle = '#fff';
-  recCtx.font = 'bold ' + fontSize + 'px sans-serif';
-  recCtx.textBaseline = 'middle';
-  recCtx.textAlign = 'left';
-  recCtx.fillText(timeStr, Math.round(cw * 0.02), ch - barH / 2);
-  recCtx.textAlign = 'center';
-  recCtx.fillText(speedDisplay.textContent + ' km/h', cw / 2, ch - barH / 2);
-  recCtx.textAlign = 'right';
-  recCtx.fillText(gcj.lat.toFixed(6) + ',' + gcj.lng.toFixed(6), cw - Math.round(cw * 0.02), ch - barH / 2);
-}
-
-var mediaRecorder = null;
-var recordedChunks = [];
-
-function startRecording() {
-  if (!cameraStream) return;
-  var cw = Math.min(video.videoWidth || 1280, 1280);
-  var ch = Math.min(video.videoHeight || 720, 720);
-  if (cw / ch > 16/9) { ch = Math.round(cw * 9 / 16); }
-  else { cw = Math.round(ch * 16 / 9); }
-  recCanvas.width = cw;
-  recCanvas.height = ch;
-  try {
-    canvasStream = recCanvas.captureStream(15);
-  } catch (e) {
-    showToast('❌ 浏览器不支持录像', 5000);
-    return;
-  }
-  // Add audio via video.captureStream() for proper browser-managed audio track
-  var hasAudio = false;
-  try {
-    var vs = video.captureStream(30);
-    var audioTracks = vs.getAudioTracks();
-    if (audioTracks.length > 0) {
-      canvasStream.addTrack(audioTracks[0]);
-      hasAudio = true;
-    }
-  } catch (e) {}
-  // Find best mime type with audio support
-  var audioMimeTypes = [
-    'video/webm;codecs=vp8,vorbis',
-    'video/webm;codecs=vp8,opus',
-    'video/webm;codecs=vp9,opus',
-    'video/webm',
-    'video/mp4'
-  ];
-  var mimeType = '';
-  for (var i = 0; i < audioMimeTypes.length; i++) {
-    if (MediaRecorder.isTypeSupported(audioMimeTypes[i])) { mimeType = audioMimeTypes[i]; break; }
-  }
-  recordedChunks = [];
-  try {
-    mediaRecorder = new MediaRecorder(canvasStream, mimeType ? { mimeType: mimeType } : {});
-  } catch (e) {
-    try { mediaRecorder = new MediaRecorder(canvasStream); } catch (e2) {
-      showToast('❌ 浏览器不支持录像', 5000); return;
-    }
-  }
-  if (hasAudio) { audioStatus.textContent = '🎤 音频'; } else { audioStatus.textContent = '🎥 仅视频'; }
-  // Start native audio recording on Android
-  if (window.Android) {
-    try { Android.startAudioRecording(); } catch (e) {}
-  }
-  mediaRecorder.ondataavailable = function (e) {
-    if (e.data && e.data.size > 0) recordedChunks.push(e.data);
-  };
-  mediaRecorder.onstop = function () { onRecordingStop(); };
-  mediaRecorder.start(1000);
-  recording = true;
-  drawOverlayFrame();
-  recInterval = setInterval(drawOverlayFrame, 66);
-  recStartTime = Date.now();
-  recTimer = setInterval(updateRecTime, 200);
-  recordBtn.className = 'btn-record recording';
-  recordLabel.textContent = '停止录像';
+  showToast('📸 拍照功能 (开发中)', 3000);
 }
 
 function toggleRecord() {
+  if (!window.Android) {
+    showToast('❌ 未连接到Native层', 3000);
+    return;
+  }
   if (recording) {
-    if (recInterval) { clearInterval(recInterval); recInterval = null; }
-    canvasStream = null;
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    var result = Android.stopRecording();
+    if (result === 'ok') {
+      recording = false;
+      clearInterval(recTimer); recTimer = null;
+      recStartTime = null;
+      recTime.textContent = '已停止';
+      setTimeout(function () { recTime.textContent = '00:00'; }, 2000);
+      recordBtn.className = 'btn-record stopped';
+      recordLabel.textContent = '开始录像';
+      recDot.classList.remove('active');
+      recIndicator.textContent = '待机';
+      showToast('✅ 录像已保存', 3000);
+    }
   } else {
-    startRecording();
-  }
-}
-
-function onRecordingStop() {
-  if (recInterval) { clearInterval(recInterval); recInterval = null; }
-  canvasStream = null;
-  var blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'video/webm' });
-  recordedChunks = [];
-  var ts = new Date().toISOString().replace(/[:.]/g, '-');
-  var isMp4 = (mediaRecorder.mimeType || '').indexOf('mp4') >= 0;
-  var ext = isMp4 ? 'mp4' : 'webm';
-  var fileName = 'dashcam_' + ts + '.' + ext;
-  if (window.Android) {
     var cfg = getSaveConfig();
-    var reader = new FileReader();
-    reader.onloadend = function () {
-      var base64 = reader.result.split(',')[1];
-      try {
-        var path = Android.mergeAndSave(base64, fileName, cfg.dirType, cfg.subDir, true);
-        if (path) {
-          showToast('✅ 已保存: ' + fileName, 5000);
-        } else {
-          showToast('❌ 保存失败', 8000);
-        }
-      } catch (e) {
-        showToast('❌ 保存失败', 5000);
-      }
-      if (autoRestart) {
-        autoRestart = false;
-        startRecording();
-      } else {
-        resetRecordingUI();
-      }
-    };
-    reader.onerror = function () { resetRecordingUI(); };
-    reader.readAsDataURL(blob);
-  } else {
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    a.click();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
-    resetRecordingUI();
+    var result = Android.startRecording(cfg.dirType, cfg.subDir);
+    if (result === 'ok') {
+      recording = true;
+      recStartTime = Date.now();
+      recTimer = setInterval(updateRecTime, 200);
+      recordBtn.className = 'btn-record recording';
+      recordLabel.textContent = '停止录像';
+      recDot.classList.add('active');
+      recIndicator.textContent = '⏺ 录像中';
+    } else {
+      showToast('❌ 启动录像失败: ' + result, 5000);
+    }
   }
 }
 
-function resetRecordingUI() {
-  recording = false;
-  clearInterval(recTimer); recTimer = null;
-  recStartTime = null;
-  recTime.textContent = '已保存';
-  setTimeout(function () { recTime.textContent = '00:00'; }, 2000);
-  recordBtn.className = 'btn-record stopped';
-  recordLabel.textContent = '开始录像';
+function switchCamera() {
+  if (window.Android) {
+    Android.switchCamera();
+  }
 }
 
 function updateRecTime() {
@@ -662,10 +405,43 @@ function updateRecTime() {
   recTime.textContent =
     String(Math.floor(sec / 60)).padStart(2, '0') + ':' + String(sec % 60).padStart(2, '0');
   if (sec >= 60) {
-    autoRestart = true;
-    if (recInterval) { clearInterval(recInterval); recInterval = null; }
-    canvasStream = null;
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    autoRestart();
+  }
+}
+
+function autoRestart() {
+  if (!recording) return;
+  var cfg = getSaveConfig();
+  Android.stopRecording();
+  setTimeout(function () {
+    Android.startRecording(cfg.dirType, cfg.subDir);
+    recStartTime = Date.now();
+  }, 500);
+}
+
+function pollRecordingState() {
+  if (window.Android) {
+    try {
+      var isRec = Android.isRecording();
+      if (isRec && !recording) {
+        recording = true;
+        if (!recStartTime) recStartTime = Date.now();
+        if (!recTimer) recTimer = setInterval(updateRecTime, 200);
+        recordBtn.className = 'btn-record recording';
+        recordLabel.textContent = '停止录像';
+        recDot.classList.add('active');
+        recIndicator.textContent = '⏺ 录像中';
+      } else if (!isRec && recording) {
+        recording = false;
+        clearInterval(recTimer); recTimer = null;
+        recStartTime = null;
+        recTime.textContent = '00:00';
+        recordBtn.className = 'btn-record stopped';
+        recordLabel.textContent = '开始录像';
+        recDot.classList.remove('active');
+        recIndicator.textContent = '待机';
+      }
+    } catch (e) {}
   }
 }
 
@@ -684,20 +460,10 @@ try {
   settingsOverlay.addEventListener('click', function (e) {
     if (e.target === settingsOverlay) settingsOverlay.classList.add('hidden');
   });
-  if (!window._dashcamStarted) {
-    window._dashcamStarted = true;
-    startCamera();
-    startGPS();
-    setTimeout(function checkAutoStart() {
-      if (video.videoWidth && video.videoHeight && cameraStream) {
-        startRecording();
-      } else {
-        setTimeout(checkAutoStart, 300);
-      }
-    }, 600);
-  }
+  startGPS();
   updateClock();
   setInterval(updateClock, 1000);
+  setInterval(pollRecordingState, 2000);
 } catch (e) {
   console.error('Init error:', e);
 }
