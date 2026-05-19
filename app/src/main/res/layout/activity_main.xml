@@ -1,5 +1,146 @@
 <?xml version="1.0" encoding="utf-8"?>
-<WebView xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/webView"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent" />
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#000">
+
+    <FrameLayout
+        android:id="@+id/previewContainer"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="35">
+
+        <TextureView
+            android:id="@+id/cameraPreview"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <TextView android:id="@+id/ovLabel"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_margin="10dp"
+            android:text="⏺ 行车记录" android:textColor="#fff"
+            android:textSize="12sp" android:textStyle="bold"
+            android:background="#70000000" android:paddingHorizontal="8dp" android:paddingVertical="3dp"/>
+
+        <TextView android:id="@+id/ovTime"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="10dp" android:layout_marginTop="36dp"
+            android:textColor="#fff" android:textSize="11sp"/>
+
+        <TextView android:id="@+id/ovGPS"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="10dp" android:layout_marginBottom="8dp"
+            android:layout_gravity="bottom"
+            android:textColor="#fff" android:textSize="11sp"/>
+
+        <TextView android:id="@+id/ovRecTime"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="10dp" android:layout_marginEnd="10dp"
+            android:layout_gravity="top|end"
+            android:textColor="#ff3b30" android:textSize="12sp" android:textStyle="bold"
+            android:visibility="gone"/>
+    </FrameLayout>
+
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="65"
+        android:background="#000">
+
+        <LinearLayout android:id="@+id/clockContent"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_centerInParent="true"
+            android:gravity="center"
+            android:orientation="vertical">
+
+            <TextView android:id="@+id/clockDisplay"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="00:00" android:textColor="#fff"
+                android:textSize="88sp" android:textStyle="bold"
+                android:letterSpacing="0.08"/>
+
+            <TextView android:id="@+id/clockDate"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:textColor="#66ffffff" android:textSize="12sp"
+                android:layout_marginBottom="4dp"/>
+
+            <LinearLayout
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:gravity="center" android:orientation="horizontal">
+
+                <TextView android:id="@+id/speedDisplay"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="0" android:textColor="#fff"
+                    android:textSize="44sp" android:textStyle="bold"
+                    android:letterSpacing="-0.02"/>
+
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text=" km/h" android:textColor="#66ffffff"
+                    android:textSize="16sp" android:layout_marginStart="4dp"/>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:gravity="center" android:orientation="horizontal"
+                android:layout_marginTop="4dp">
+
+                <TextView android:id="@+id/gpsIndicator"
+                    android:layout_width="8dp" android:layout_height="8dp"
+                    android:background="#ff3b30" android:layout_marginEnd="6dp"/>
+
+                <TextView android:id="@+id/gpsText"
+                    android:text="定位中..." android:textColor="#66ffffff"
+                    android:textSize="11sp"/>
+
+                <TextView android:id="@+id/latDisplay"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="--" android:textColor="#66ffffff"
+                    android:textSize="11sp" android:layout_marginStart="10dp"/>
+
+                <TextView android:id="@+id/lngDisplay"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="--" android:textColor="#66ffffff"
+                    android:textSize="11sp" android:layout_marginStart="10dp"/>
+
+                <TextView android:id="@+id/recTime"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="00:00" android:textColor="#b3ffffff"
+                    android:textSize="12sp" android:textStyle="bold"
+                    android:layout_marginStart="12dp" android:visibility="gone"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_alignParentBottom="true"
+            android:gravity="center"
+            android:paddingHorizontal="20dp" android:paddingBottom="20dp"
+            android:orientation="horizontal">
+
+            <Button android:id="@+id/btnPhoto"
+                android:layout_width="0dp" android:layout_height="48dp"
+                android:layout_weight="1" android:layout_marginEnd="8dp"
+                android:text="📸 拍照" android:textSize="15sp"
+                android:textColor="#fff"
+                android:background="@drawable/btn_blue"
+                android:gravity="center" android:stateListAnimator="@null"/>
+
+            <Button android:id="@+id/btnRecord"
+                android:layout_width="0dp" android:layout_height="48dp"
+                android:layout_weight="1" android:layout_marginEnd="8dp"
+                android:text="开始录像" android:textSize="15sp"
+                android:textColor="#fff"
+                android:background="@drawable/btn_gray"
+                android:gravity="center" android:stateListAnimator="@null"/>
+
+            <Button android:id="@+id/btnExit"
+                android:layout_width="48dp" android:layout_height="48dp"
+                android:text="✕" android:textSize="18sp"
+                android:textColor="#fff"
+                android:background="@drawable/btn_gray"
+                android:gravity="center" android:stateListAnimator="@null"/>
+        </LinearLayout>
+    </RelativeLayout>
+</LinearLayout>
