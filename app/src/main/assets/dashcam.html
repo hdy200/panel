@@ -298,13 +298,19 @@ function updateClock() {
 // ========== Camera ==========
 async function startCamera() {
   try {
-    var constraints = {
+    var vstream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: useFrontCamera ? 'user' : 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: true
-    };
-    var stream = await navigator.mediaDevices.getUserMedia(constraints);
-    video.srcObject = stream;
-    audioTrack = stream.getAudioTracks()[0];
+      audio: false
+    });
+    video.srcObject = vstream;
+
+    // Try to add audio separately
+    try {
+      var astream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioTrack = astream.getAudioTracks()[0];
+    } catch (e) {
+      audioTrack = null;
+    }
 
     video.onloadedmetadata = function () {
       resizeCanvas();
@@ -401,12 +407,13 @@ function draw() {
 // ========== Recording ==========
 function startRecording() {
   if (recording || !cameraStarted) return;
-  if (!audioTrack) { showToast('❌ 无音频轨道'); return; }
 
   try {
     canvasStream = canvas.captureStream(30);
     var canvasVideoTrack = canvasStream.getVideoTracks()[0];
-    var combinedStream = new MediaStream([canvasVideoTrack, audioTrack]);
+    var tracks = [canvasVideoTrack];
+    if (audioTrack) tracks.push(audioTrack);
+    var combinedStream = new MediaStream(tracks);
 
     recordedChunks = [];
     mediaRecorder = new MediaRecorder(combinedStream, {
@@ -574,8 +581,8 @@ async function switchCamera() {
   if (recording) stopRecording();
   if (video.srcObject) {
     video.srcObject.getTracks().forEach(function (t) { t.stop(); });
-    audioTrack = null;
   }
+  if (audioTrack) { audioTrack.stop(); audioTrack = null; }
   useFrontCamera = !useFrontCamera;
   cameraStarted = false;
   await startCamera();
