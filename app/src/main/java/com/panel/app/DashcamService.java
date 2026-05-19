@@ -44,6 +44,7 @@ public class DashcamService extends Service {
     private CaptureRequest.Builder previewRequestBuilder;
     private Surface previewSurface;
     private boolean isRecording = false;
+    private boolean recorderStarted = false;
     private boolean cameraOpen = false;
     private String currentFilePath;
     private String currentDirType = "MOVIES";
@@ -196,14 +197,13 @@ public class DashcamService extends Service {
         }
     }
 
-    public void startRecording(String dirType, String subDir) {
-        if (cameraDevice == null || isRecording) return;
+    public boolean startRecording(String dirType, String subDir) {
+        if (cameraDevice == null || isRecording) return false;
+        if (!cameraOpen) return false;
         currentDirType = dirType != null ? dirType : "MOVIES";
         currentSubDir = subDir != null && !subDir.isEmpty() ? subDir : "Dashcam";
 
         try {
-            closeCaptureSession();
-
             mediaRecorder = new MediaRecorder();
             mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
             mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
@@ -231,7 +231,7 @@ public class DashcamService extends Service {
                     currentFilePath = uri.toString();
                     mediaRecorder.setOutputFile(getContentResolver().openFileDescriptor(uri, "w").getFileDescriptor());
                 } else {
-                    return;
+                    return false;
                 }
             } else {
                 File movieDir = new File(Environment.getExternalStoragePublicDirectory(
@@ -245,16 +245,14 @@ public class DashcamService extends Service {
             mediaRecorder.prepare();
 
             isRecording = true;
+            recorderStarted = false;
             updateCameraSession();
-            mediaRecorder.start();
-
-            updateNotification("⏺ 录像中");
-            if (cameraStateListener != null)
-                cameraStateListener.onRecordingStarted();
+            return true;
 
         } catch (Exception e) {
             Log.e(TAG, "startRecording failed", e);
             isRecording = false;
+            return false;
         }
     }
 
@@ -351,10 +349,26 @@ public class DashcamService extends Service {
                             } catch (Exception e) {
                                 Log.e(TAG, "updateCameraSession setRepeatingRequest failed", e);
                             }
+                            if (isRecording && mediaRecorder != null && !recorderStarted) {
+                                recorderStarted = true;
+                                try {
+                                    mediaRecorder.start();
+                                } catch (Exception e) {
+                                    Log.e(TAG, "mediaRecorder.start failed", e);
+                                }
+                                updateNotification("⏺ 录像中");
+                                if (cameraStateListener != null)
+                                    cameraStateListener.onRecordingStarted();
+                            }
                         }
                         @Override
                         public void onConfigureFailed(CameraCaptureSession session) {
                             Log.e(TAG, "updateCameraSession configure failed");
+                            if (isRecording) {
+                                isRecording = false;
+                                try { mediaRecorder.release(); } catch (Exception e) {}
+                                mediaRecorder = null;
+                            }
                         }
                     }, mainHandler);
 

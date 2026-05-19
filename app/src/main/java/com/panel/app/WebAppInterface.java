@@ -18,8 +18,8 @@ public class WebAppInterface {
     @JavascriptInterface
     public String startRecording(String dirType, String subDir) {
         if (dashcamService != null) {
-            dashcamService.startRecording(dirType, subDir);
-            return "ok";
+            boolean ok = dashcamService.startRecording(dirType, subDir);
+            return ok ? "ok" : "camera_not_ready";
         }
         return "service_not_ready";
     }
