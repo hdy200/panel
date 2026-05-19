@@ -41,6 +41,7 @@ public class MainActivity extends Activity {
     private WebView webView;
     private ServerSocket serverSocket;
     private int serverPort;
+    private WebAppInterface webAppInterface;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -88,7 +89,9 @@ public class MainActivity extends Activity {
             }
         });
 
-        webView.addJavascriptInterface(new WebAppInterface(this), "Android");
+        webAppInterface = new WebAppInterface(this);
+        webAppInterface.setServerPort(serverPort);
+        webView.addJavascriptInterface(webAppInterface, "Android");
 
         Intent serviceIntent = new Intent(this, DashcamService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -97,7 +100,12 @@ public class MainActivity extends Activity {
             startService(serviceIntent);
         }
 
-        webView.loadUrl("http://localhost:" + serverPort + "/dashcam.html");
+        try {
+            String html = readAsset("dashcam.html");
+            webView.loadDataWithBaseURL("https://dashcam.local/", html, "text/html", "UTF-8", null);
+        } catch (Exception e) {
+            Toast.makeText(this, "加载页面失败", Toast.LENGTH_LONG).show();
+        }
     }
 
     private void checkPermissionsAndStart() {
@@ -134,12 +142,16 @@ public class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == PERMISSION_REQUEST_CODE) {
+            boolean allGranted = true;
             for (int i = 0; i < grantResults.length; i++) {
                 if (grantResults[i] != PackageManager.PERMISSION_GRANTED) {
+                    allGranted = false;
                     Toast.makeText(this, "权限被拒绝: " + permissions[i], Toast.LENGTH_LONG).show();
                 }
             }
-            startLocalServer();
+            if (allGranted) {
+                startLocalServer();
+            }
         }
     }
 
@@ -170,10 +182,14 @@ public class MainActivity extends Activity {
             String path = requestLine.split(" ")[1];
 
             OutputStream os = client.getOutputStream();
-            byte[] responseBody;
-            String contentType = "text/html; charset=UTF-8";
+            byte[] responseBody = new byte[0];
+            String contentType = "text/plain; charset=UTF-8";
+            int statusCode = 200;
 
-            if ("POST".equals(method) && "/saveFile".equals(path)) {
+            if ("OPTIONS".equals(method)) {
+                statusCode = 200;
+                responseBody = "OK".getBytes("UTF-8");
+            } else if ("POST".equals(method) && "/saveFile".equals(path)) {
                 String fileName = null, mimeType = "video/mp4", dirType = "MOVIES", subDir = "Dashcam";
                 int contentLength = 0;
                 String line;
@@ -197,17 +213,18 @@ public class MainActivity extends Activity {
                 String savedUri = saveFileToMediaStore(body, fileName, mimeType, dirType, subDir);
                 String resp = savedUri != null ? savedUri : "ERROR";
                 responseBody = resp.getBytes("UTF-8");
-                contentType = "text/plain; charset=UTF-8";
-            } else if ("/dashcam.html".equals(path)) {
-                String html = readAsset("dashcam.html");
-                responseBody = html.getBytes("UTF-8");
             } else {
-                responseBody = "404".getBytes("UTF-8");
+                statusCode = 404;
+                responseBody = "Not Found".getBytes("UTF-8");
             }
 
-            os.write("HTTP/1.1 200 OK\r\n".getBytes());
+            String statusLine = "HTTP/1.1 " + statusCode + " " + (statusCode == 200 ? "OK" : "Not Found") + "\r\n";
+            os.write(statusLine.getBytes());
             os.write(("Content-Type: " + contentType + "\r\n").getBytes());
             os.write(("Content-Length: " + responseBody.length + "\r\n").getBytes());
+            os.write("Access-Control-Allow-Origin: *\r\n".getBytes());
+            os.write("Access-Control-Allow-Methods: POST, OPTIONS\r\n".getBytes());
+            os.write("Access-Control-Allow-Headers: X-File-Name, X-File-Type, X-Dir-Type, X-Sub-Dir, Content-Length\r\n".getBytes());
             os.write("Connection: close\r\n\r\n".getBytes());
             os.write(responseBody);
             os.flush();

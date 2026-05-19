@@ -217,7 +217,7 @@ var canvasStream = null;
 var audioTrack = null;
 var animFrameId = null;
 var useFrontCamera = false;
-var serverBase = 'http://localhost:' + window.location.port;
+var serverBase = 'http://127.0.0.1:' + (window.Android ? Android.getServerPort() : 0);
 var cameraStarted = false;
 
 function showToast(msg, duration) {

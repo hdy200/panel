@@ -1,22 +1,23 @@
 package com.panel.app;
 
 import android.app.Activity;
-import android.content.Context;
-import android.content.Intent;
 import android.webkit.JavascriptInterface;
-import android.widget.Toast;
 
 public class WebAppInterface {
     private Activity activity;
+    private int serverPort;
 
     public WebAppInterface(Activity activity) {
         this.activity = activity;
     }
 
+    public void setServerPort(int port) {
+        this.serverPort = port;
+    }
+
     @JavascriptInterface
-    public void showToast(String msg) {
-        activity.runOnUiThread(() ->
-                Toast.makeText(activity, msg, Toast.LENGTH_LONG).show());
+    public int getServerPort() {
+        return serverPort;
     }
 
     @JavascriptInterface
