@@ -2,23 +2,15 @@ package com.panel.app;
 
 import android.Manifest;
 import android.app.Activity;
-import android.content.ComponentName;
-import android.content.Context;
+import android.content.ContentValues;
 import android.content.Intent;
-import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
-import android.graphics.Matrix;
-import android.graphics.RectF;
-import android.graphics.SurfaceTexture;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.IBinder;
-import android.util.DisplayMetrics;
-import android.util.Size;
-import android.view.Surface;
-import android.view.TextureView;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.GeolocationPermissions;
 import android.webkit.PermissionRequest;
@@ -33,66 +25,22 @@ import androidx.core.content.ContextCompat;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URLDecoder;
 
 public class MainActivity extends Activity {
     private static final int PERMISSION_REQUEST_CODE = 100;
     private static final int PERMISSION_CODE_13 = 101;
 
     private WebView webView;
-    private TextureView textureView;
     private ServerSocket serverSocket;
     private int serverPort;
-
-    private DashcamService dashcamService;
-    private boolean serviceBound = false;
-    private boolean surfaceReady = false;
-    private boolean cameraOpened = false;
-
-    private ServiceConnection serviceConnection = new ServiceConnection() {
-        @Override
-        public void onServiceConnected(ComponentName name, IBinder service) {
-            dashcamService = ((DashcamService.LocalBinder) service).getService();
-            serviceBound = true;
-            dashcamService.setCameraStateListener(cameraStateListener);
-            if (webAppInterface != null) {
-                webAppInterface.setDashcamService(dashcamService);
-            }
-            if (surfaceReady && !cameraOpened) {
-                openCamera();
-            }
-        }
-        @Override
-        public void onServiceDisconnected(ComponentName name) {
-            serviceBound = false;
-        }
-    };
-
-    private DashcamService.OnCameraStateListener cameraStateListener =
-            new DashcamService.OnCameraStateListener() {
-        @Override
-        public void onCameraOpened() {
-            cameraOpened = true;
-            runOnUiThread(() -> {
-                if (dashcamService != null && textureView.isAvailable()) {
-                    configureTextureTransform(dashcamService.getSensorOrientation());
-                }
-            });
-        }
-        @Override
-        public void onCameraError(String msg) {
-            runOnUiThread(() ->
-                    Toast.makeText(MainActivity.this, "摄像头错误: " + msg, Toast.LENGTH_LONG).show());
-        }
-        @Override
-        public void onRecordingStarted() {}
-        @Override
-        public void onRecordingStopped(String savedPath) {}
-    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -110,92 +58,46 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         webView = findViewById(R.id.webView);
-        textureView = findViewById(R.id.cameraPreview);
-
-        textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
-            @Override
-            public void onSurfaceTextureAvailable(SurfaceTexture st, int width, int height) {
-                surfaceReady = true;
-                ViewGroup.LayoutParams lp = textureView.getLayoutParams();
-                DisplayMetrics dm = getResources().getDisplayMetrics();
-                lp.height = (int)(dm.heightPixels * 0.35);
-                textureView.setLayoutParams(lp);
-                if (serviceBound && dashcamService != null) {
-                    dashcamService.setPreviewSurface(new Surface(st));
-                    if (!cameraOpened) openCamera();
-                }
-            }
-            @Override
-            public void onSurfaceTextureSizeChanged(SurfaceTexture st, int width, int height) {
-                if (serviceBound && dashcamService != null) {
-                    dashcamService.setPreviewSurface(new Surface(st));
-                }
-            }
-            @Override
-            public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
-                surfaceReady = false;
-                if (serviceBound && dashcamService != null) {
-                    dashcamService.clearPreviewSurface();
-                }
-                return false;
-            }
-            @Override
-            public void onSurfaceTextureUpdated(SurfaceTexture st) {}
-        });
 
         checkPermissionsAndStart();
     }
 
-    private void openCamera() {
-        if (dashcamService == null) return;
-        int w = textureView.getWidth() > 0 ? textureView.getWidth() : 1280;
-        int h = textureView.getHeight() > 0 ? textureView.getHeight() : 720;
-        SurfaceTexture st = textureView.getSurfaceTexture();
-        if (st != null) {
-            dashcamService.setPreviewSurface(new Surface(st));
-        }
-        dashcamService.openCamera(w, h, false);
-    }
+    private void setupWebView() {
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        settings.setGeolocationEnabled(true);
+        settings.setAllowFileAccess(true);
+        settings.setAllowContentAccess(true);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
 
-    private void configureTextureTransform(int sensorOrientation) {
-        if (dashcamService == null) return;
-        int viewWidth = textureView.getWidth();
-        int viewHeight = textureView.getHeight();
-        if (viewWidth == 0 || viewHeight == 0) return;
+        webView.setBackgroundColor(0xff000000);
+        webView.setLayerType(WebView.LAYER_TYPE_HARDWARE, null);
 
-        int rotation = getWindowManager().getDefaultDisplay().getRotation();
-        Matrix matrix = new Matrix();
-        RectF viewRect = new RectF(0, 0, viewWidth, viewHeight);
+        webView.setWebViewClient(new WebViewClient());
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                request.grant(request.getResources());
+            }
+            @Override
+            public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
+                callback.invoke(origin, true, false);
+            }
+        });
 
-        Size ps = getPreviewSize();
-        int bufferWidth = ps.getHeight();
-        int bufferHeight = ps.getWidth();
-        if (sensorOrientation == 90 || sensorOrientation == 270) {
-            bufferWidth = ps.getHeight();
-            bufferHeight = ps.getWidth();
+        webView.addJavascriptInterface(new WebAppInterface(this), "Android");
+
+        Intent serviceIntent = new Intent(this, DashcamService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
         } else {
-            bufferWidth = ps.getWidth();
-            bufferHeight = ps.getHeight();
+            startService(serviceIntent);
         }
 
-        RectF bufferRect = new RectF(0, 0, bufferWidth, bufferHeight);
-        float centerX = viewRect.centerX();
-        float centerY = viewRect.centerY();
-        if (Surface.ROTATION_90 == rotation || Surface.ROTATION_270 == rotation) {
-            bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY());
-            matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL);
-            float scale = Math.max(
-                    (float) viewHeight / bufferHeight,
-                    (float) viewWidth / bufferWidth);
-            matrix.postScale(scale, scale, centerX, centerY);
-            matrix.postRotate(90 * (rotation - 2), centerX, centerY);
-        }
-        textureView.setTransform(matrix);
-    }
-
-    private Size getPreviewSize() {
-        if (dashcamService != null) return dashcamService.getPreviewSize();
-        return new Size(1280, 720);
+        webView.loadUrl("http://localhost:" + serverPort + "/dashcam.html");
     }
 
     private void checkPermissionsAndStart() {
@@ -241,57 +143,12 @@ public class MainActivity extends Activity {
         }
     }
 
-    private WebAppInterface webAppInterface;
-
-    private void setupWebView() {
-        WebSettings settings = webView.getSettings();
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        settings.setDatabaseEnabled(true);
-        settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setGeolocationEnabled(true);
-        settings.setAllowFileAccess(true);
-        settings.setAllowContentAccess(true);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
-
-        webView.setBackgroundColor(0x00000000);
-        webView.setLayerType(WebView.LAYER_TYPE_HARDWARE, null);
-
-        webView.setWebViewClient(new WebViewClient());
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onPermissionRequest(final PermissionRequest request) {
-                request.grant(request.getResources());
-            }
-            @Override
-            public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
-                callback.invoke(origin, true, false);
-            }
-        });
-
-        webAppInterface = new WebAppInterface(this);
-        webView.addJavascriptInterface(webAppInterface, "Android");
-
-        Intent serviceIntent = new Intent(this, DashcamService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
-        }
-        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE);
-
-        webView.loadUrl("http://localhost:" + serverPort + "/dashcam.html");
-    }
-
     private void startLocalServer() {
         new Thread(() -> {
             try {
                 serverSocket = new ServerSocket(0, 0, java.net.InetAddress.getByName("127.0.0.1"));
                 serverPort = serverSocket.getLocalPort();
-
                 runOnUiThread(this::setupWebView);
-
                 while (!serverSocket.isClosed()) {
                     Socket client = serverSocket.accept();
                     handleRequest(client);
@@ -304,26 +161,55 @@ public class MainActivity extends Activity {
 
     private void handleRequest(Socket client) {
         try {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream()));
+            InputStream in = client.getInputStream();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(in, "UTF-8"));
             String requestLine = reader.readLine();
             if (requestLine == null) { reader.close(); client.close(); return; }
 
+            String method = requestLine.split(" ")[0];
             String path = requestLine.split(" ")[1];
 
             OutputStream os = client.getOutputStream();
+            byte[] responseBody;
+            String contentType = "text/html; charset=UTF-8";
 
-            if ("/dashcam.html".equals(path)) {
+            if ("POST".equals(method) && "/saveFile".equals(path)) {
+                String fileName = null, mimeType = "video/mp4", dirType = "MOVIES", subDir = "Dashcam";
+                int contentLength = 0;
+                String line;
+                while ((line = reader.readLine()) != null && !line.isEmpty()) {
+                    if (line.startsWith("Content-Length:")) contentLength = Integer.parseInt(line.substring(15).trim());
+                    if (line.startsWith("X-File-Name:")) fileName = URLDecoder.decode(line.substring(12).trim(), "UTF-8");
+                    if (line.startsWith("X-File-Type:")) mimeType = line.substring(12).trim();
+                    if (line.startsWith("X-Dir-Type:")) dirType = line.substring(11).trim();
+                    if (line.startsWith("X-Sub-Dir:")) subDir = URLDecoder.decode(line.substring(10).trim(), "UTF-8");
+                }
+
+                byte[] body = new byte[contentLength];
+                int totalRead = 0;
+                while (totalRead < contentLength) {
+                    int read = in.read(body, totalRead, contentLength - totalRead);
+                    if (read == -1) break;
+                    totalRead += read;
+                }
+
+                if (fileName == null) fileName = "file_" + System.currentTimeMillis() + ".mp4";
+                String savedUri = saveFileToMediaStore(body, fileName, mimeType, dirType, subDir);
+                String resp = savedUri != null ? savedUri : "ERROR";
+                responseBody = resp.getBytes("UTF-8");
+                contentType = "text/plain; charset=UTF-8";
+            } else if ("/dashcam.html".equals(path)) {
                 String html = readAsset("dashcam.html");
-                byte[] data = html.getBytes("UTF-8");
-                os.write("HTTP/1.1 200 OK\r\n".getBytes());
-                os.write("Content-Type: text/html; charset=UTF-8\r\n".getBytes());
-                os.write(("Content-Length: " + data.length + "\r\n").getBytes());
-                os.write("Connection: close\r\n\r\n".getBytes());
-                os.write(data);
+                responseBody = html.getBytes("UTF-8");
             } else {
-                os.write("HTTP/1.1 404 Not Found\r\n\r\n".getBytes());
+                responseBody = "404".getBytes("UTF-8");
             }
 
+            os.write("HTTP/1.1 200 OK\r\n".getBytes());
+            os.write(("Content-Type: " + contentType + "\r\n").getBytes());
+            os.write(("Content-Length: " + responseBody.length + "\r\n").getBytes());
+            os.write("Connection: close\r\n\r\n".getBytes());
+            os.write(responseBody);
             os.flush();
             os.close();
             reader.close();
@@ -331,6 +217,67 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             e.printStackTrace();
         }
+    }
+
+    private String saveFileToMediaStore(byte[] data, String fileName, String mimeType, String dirType, String subDir) {
+        if (subDir == null || subDir.isEmpty()) subDir = "Dashcam";
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                String relativePath;
+                if ("PICTURES".equals(dirType)) relativePath = Environment.DIRECTORY_PICTURES + "/" + subDir;
+                else if ("DCIM".equals(dirType)) relativePath = Environment.DIRECTORY_DCIM + "/" + subDir;
+                else relativePath = Environment.DIRECTORY_MOVIES + "/" + subDir;
+
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+                values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath);
+                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+
+                Uri uri;
+                if (mimeType.startsWith("video")) {
+                    uri = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+                } else {
+                    uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                }
+                if (uri != null) {
+                    OutputStream os = getContentResolver().openOutputStream(uri);
+                    if (os != null) { os.write(data); os.close(); }
+                    values.clear();
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                    getContentResolver().update(uri, values, null, null);
+                    return uri.toString();
+                }
+            } else {
+                String root;
+                if ("PICTURES".equals(dirType)) root = Environment.DIRECTORY_PICTURES;
+                else if ("DCIM".equals(dirType)) root = Environment.DIRECTORY_DCIM;
+                else root = Environment.DIRECTORY_MOVIES;
+
+                File dir = new File(Environment.getExternalStoragePublicDirectory(root), subDir);
+                if (!dir.exists()) dir.mkdirs();
+                File file = new File(dir, fileName);
+                FileOutputStream fos = new FileOutputStream(file);
+                fos.write(data);
+                fos.close();
+
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                values.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+                values.put(MediaStore.MediaColumns.DATA, file.getAbsolutePath());
+
+                Uri uri;
+                if (mimeType.startsWith("video")) {
+                    uri = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+                } else {
+                    uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                }
+                return uri != null ? uri.toString() : file.getAbsolutePath();
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
     }
 
     private String readAsset(String filename) throws Exception {
@@ -352,10 +299,6 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         if (serverSocket != null) {
             try { serverSocket.close(); } catch (Exception e) {}
-        }
-        if (serviceBound) {
-            unbindService(serviceConnection);
-            serviceBound = false;
         }
         super.onDestroy();
     }

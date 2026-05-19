@@ -1,52 +1,29 @@
 package com.panel.app;
 
+import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.webkit.JavascriptInterface;
+import android.widget.Toast;
 
 public class WebAppInterface {
-    private DashcamService dashcamService;
+    private Activity activity;
 
-    public WebAppInterface(Context context) {}
-
-    public void setDashcamService(DashcamService service) {
-        this.dashcamService = service;
+    public WebAppInterface(Activity activity) {
+        this.activity = activity;
     }
 
     @JavascriptInterface
-    public void startRecording(String dirType, String subDir) {
-        if (dashcamService != null) {
-            dashcamService.startRecording(dirType, subDir);
-        }
+    public void showToast(String msg) {
+        activity.runOnUiThread(() ->
+                Toast.makeText(activity, msg, Toast.LENGTH_LONG).show());
     }
 
     @JavascriptInterface
-    public void stopRecording() {
-        if (dashcamService != null) {
-            dashcamService.stopRecording();
-        }
-    }
-
-    @JavascriptInterface
-    public boolean isRecording() {
-        return dashcamService != null && dashcamService.isRecording();
-    }
-
-    @JavascriptInterface
-    public boolean isCameraOpen() {
-        return dashcamService != null && dashcamService.isCameraOpen();
-    }
-
-    @JavascriptInterface
-    public void switchCamera() {
-        if (dashcamService != null) {
-            dashcamService.switchCamera();
-        }
-    }
-
-    @JavascriptInterface
-    public void takePhoto() {
-        if (dashcamService != null) {
-            dashcamService.takePhoto();
-        }
+    public void closeApp() {
+        activity.runOnUiThread(() -> {
+            activity.finishAffinity();
+            android.os.Process.killProcess(android.os.Process.myPid());
+        });
     }
 }
