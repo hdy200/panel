@@ -4,38 +4,36 @@ import android.content.Context;
 import android.webkit.JavascriptInterface;
 
 public class WebAppInterface {
-    private Context context;
     private DashcamService dashcamService;
 
-    public WebAppInterface(Context context) {
-        this.context = context;
-    }
+    public WebAppInterface(Context context) {}
 
     public void setDashcamService(DashcamService service) {
         this.dashcamService = service;
     }
 
     @JavascriptInterface
-    public String startRecording(String dirType, String subDir) {
+    public void startRecording(String dirType, String subDir) {
         if (dashcamService != null) {
-            boolean ok = dashcamService.startRecording(dirType, subDir);
-            return ok ? "ok" : "camera_not_ready";
+            dashcamService.startRecording(dirType, subDir);
         }
-        return "service_not_ready";
     }
 
     @JavascriptInterface
-    public String stopRecording() {
+    public void stopRecording() {
         if (dashcamService != null) {
             dashcamService.stopRecording();
-            return "ok";
         }
-        return "service_not_ready";
     }
 
     @JavascriptInterface
     public boolean isRecording() {
         return dashcamService != null && dashcamService.isRecording();
+    }
+
+    @JavascriptInterface
+    public boolean isCameraOpen() {
+        return dashcamService != null && dashcamService.isCameraOpen();
     }
 
     @JavascriptInterface
@@ -46,7 +44,9 @@ public class WebAppInterface {
     }
 
     @JavascriptInterface
-    public String takePhoto() {
-        return "todo_camera_photo";
+    public void takePhoto() {
+        if (dashcamService != null) {
+            dashcamService.takePhoto();
+        }
     }
 }

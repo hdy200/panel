@@ -6,11 +6,16 @@ import android.app.NotificationManager;
 import android.app.Service;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.graphics.ImageFormat;
+import android.graphics.SurfaceTexture;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.TotalCaptureResult;
+import android.media.Image;
+import android.media.ImageReader;
 import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
@@ -19,11 +24,16 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.provider.MediaStore;
+import android.util.Base64;
 import android.util.Log;
 import android.util.Size;
 import android.view.Surface;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -41,10 +51,8 @@ public class DashcamService extends Service {
     private MediaRecorder mediaRecorder;
     private String cameraId;
     private Size previewSize = new Size(1280, 720);
-    private CaptureRequest.Builder previewRequestBuilder;
     private Surface previewSurface;
-    private boolean isRecording = false;
-    private boolean recorderStarted = false;
+    private volatile boolean isRecording = false;
     private boolean cameraOpen = false;
     private String currentFilePath;
     private String currentDirType = "MOVIES";
@@ -53,6 +61,7 @@ public class DashcamService extends Service {
     private int sensorOrientation = 0;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private OnCameraStateListener cameraStateListener;
+    private ImageReader photoReader;
 
     interface OnCameraStateListener {
         void onCameraOpened();
@@ -122,16 +131,26 @@ public class DashcamService extends Service {
         } catch (Exception e) {}
     }
 
+    private void runOnMain(Runnable r) {
+        if (Looper.myLooper() == mainHandler.getLooper()) {
+            r.run();
+        } else {
+            mainHandler.post(r);
+        }
+    }
+
     public void setCameraStateListener(OnCameraStateListener listener) {
         this.cameraStateListener = listener;
     }
+
+    // ========== Camera open / close ==========
 
     public void openCamera(int width, int height, boolean useFrontCamera) {
         previewSize = new Size(width, height);
         cameraFacing = useFrontCamera
                 ? CameraCharacteristics.LENS_FACING_FRONT
                 : CameraCharacteristics.LENS_FACING_BACK;
-        doOpenCamera();
+        runOnMain(this::doOpenCamera);
     }
 
     private void doOpenCamera() {
@@ -157,7 +176,7 @@ public class DashcamService extends Service {
                 public void onOpened(CameraDevice device) {
                     cameraDevice = device;
                     cameraOpen = true;
-                    updateCameraSession();
+                    startPreviewSession();
                     if (cameraStateListener != null)
                         cameraStateListener.onCameraOpened();
                 }
@@ -181,83 +200,149 @@ public class DashcamService extends Service {
         }
     }
 
+    // ========== Preview surface management ==========
+
     public void setPreviewSurface(Surface surface) {
-        this.previewSurface = surface;
-        if (cameraOpen && cameraDevice != null && surface != null && surface.isValid()) {
-            updateCameraSession();
-        }
+        runOnMain(() -> {
+            this.previewSurface = surface;
+            if (!isRecording && cameraOpen && surface != null && surface.isValid()) {
+                startPreviewSession();
+            }
+        });
     }
 
     public void clearPreviewSurface() {
-        this.previewSurface = null;
-        if (isRecording) {
-            updateCameraSession();
-        } else {
-            closeCaptureSession();
-        }
+        runOnMain(() -> {
+            this.previewSurface = null;
+            if (!isRecording) {
+                closeCaptureSession();
+            }
+        });
     }
 
-    public boolean startRecording(String dirType, String subDir) {
-        if (cameraDevice == null || isRecording) return false;
-        if (!cameraOpen) return false;
-        currentDirType = dirType != null ? dirType : "MOVIES";
-        currentSubDir = subDir != null && !subDir.isEmpty() ? subDir : "Dashcam";
+    // ========== Preview (no recording) ==========
 
-        try {
-            mediaRecorder = new MediaRecorder();
-            mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
-            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-            mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-            mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-            mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-            mediaRecorder.setVideoSize(previewSize.getWidth(), previewSize.getHeight());
-            mediaRecorder.setVideoFrameRate(30);
-            mediaRecorder.setVideoEncodingBitRate(5000000);
-            mediaRecorder.setAudioSamplingRate(44100);
-            mediaRecorder.setAudioEncodingBitRate(96000);
-
-            String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-            String fileName = "dashcam_" + ts + ".mp4";
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                String relativePath = Environment.DIRECTORY_MOVIES + "/" + currentSubDir;
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
-                values.put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4");
-                values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath);
-                values.put(MediaStore.MediaColumns.IS_PENDING, 1);
-                Uri uri = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
-                if (uri != null) {
-                    currentFilePath = uri.toString();
-                    mediaRecorder.setOutputFile(getContentResolver().openFileDescriptor(uri, "w").getFileDescriptor());
-                } else {
-                    return false;
-                }
-            } else {
-                File movieDir = new File(Environment.getExternalStoragePublicDirectory(
-                        Environment.DIRECTORY_MOVIES), currentSubDir);
-                if (!movieDir.exists()) movieDir.mkdirs();
-                currentFilePath = new File(movieDir, fileName).getAbsolutePath();
-                mediaRecorder.setOutputFile(currentFilePath);
+    public void startPreviewSession() {
+        runOnMain(() -> {
+            if (cameraDevice == null || isRecording) return;
+            if (previewSurface == null || !previewSurface.isValid()) return;
+            closeCaptureSession();
+            try {
+                CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+                builder.addTarget(previewSurface);
+                builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                cameraDevice.createCaptureSession(
+                        java.util.Collections.singletonList(previewSurface),
+                        new CameraCaptureSession.StateCallback() {
+                            @Override
+                            public void onConfigured(CameraCaptureSession session) {
+                                captureSession = session;
+                                try {
+                                    session.setRepeatingRequest(builder.build(), null, mainHandler);
+                                } catch (Exception e) {}
+                            }
+                            @Override
+                            public void onConfigureFailed(CameraCaptureSession session) {
+                                Log.e(TAG, "preview session failed");
+                            }
+                        }, mainHandler);
+            } catch (Exception e) {
+                Log.e(TAG, "startPreviewSession failed", e);
             }
+        });
+    }
 
-            mediaRecorder.setOrientationHint(sensorOrientation);
-            mediaRecorder.prepare();
+    // ========== Recording ==========
 
-            isRecording = true;
-            recorderStarted = false;
-            updateCameraSession();
-            return true;
+    public void startRecording(String dirType, String subDir) {
+        runOnMain(() -> {
+            if (cameraDevice == null || isRecording || !cameraOpen) return;
+            currentDirType = dirType != null ? dirType : "MOVIES";
+            currentSubDir = subDir != null && !subDir.isEmpty() ? subDir : "Dashcam";
 
-        } catch (Exception e) {
-            Log.e(TAG, "startRecording failed", e);
-            isRecording = false;
-            return false;
-        }
+            try {
+                closeCaptureSession();
+
+                MediaRecorder mr = new MediaRecorder();
+                mr.setVideoSource(MediaRecorder.VideoSource.SURFACE);
+                mr.setAudioSource(MediaRecorder.AudioSource.MIC);
+                mr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+                mr.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
+                mr.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+                mr.setVideoSize(previewSize.getWidth(), previewSize.getHeight());
+                mr.setVideoFrameRate(30);
+                mr.setVideoEncodingBitRate(5000000);
+                mr.setAudioSamplingRate(44100);
+                mr.setAudioEncodingBitRate(96000);
+
+                String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+                String fileName = "dashcam_" + ts + ".mp4";
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    String relativePath = Environment.DIRECTORY_MOVIES + "/" + currentSubDir;
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                    values.put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4");
+                    values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath);
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                    Uri uri = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
+                    if (uri != null) {
+                        currentFilePath = uri.toString();
+                        mr.setOutputFile(getContentResolver().openFileDescriptor(uri, "w").getFileDescriptor());
+                    } else { return; }
+                } else {
+                    File movieDir = new File(Environment.getExternalStoragePublicDirectory(
+                            Environment.DIRECTORY_MOVIES), currentSubDir);
+                    if (!movieDir.exists()) movieDir.mkdirs();
+                    currentFilePath = new File(movieDir, fileName).getAbsolutePath();
+                    mr.setOutputFile(currentFilePath);
+                }
+
+                mr.setOrientationHint(sensorOrientation);
+                mr.prepare();
+
+                Surface recorderSurface = mr.getSurface();
+
+                List<Surface> surfaces = new ArrayList<>();
+                surfaces.add(recorderSurface);
+                if (previewSurface != null && previewSurface.isValid()) {
+                    surfaces.add(previewSurface);
+                }
+
+                CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                for (Surface s : surfaces) builder.addTarget(s);
+                builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+
+                cameraDevice.createCaptureSession(surfaces,
+                        new CameraCaptureSession.StateCallback() {
+                            @Override
+                            public void onConfigured(CameraCaptureSession session) {
+                                captureSession = session;
+                                mediaRecorder = mr;
+                                isRecording = true;
+                                try {
+                                    session.setRepeatingRequest(builder.build(), null, mainHandler);
+                                } catch (Exception e) {}
+                                mr.start();
+                                updateNotification("⏺ 录像中");
+                                if (cameraStateListener != null)
+                                    cameraStateListener.onRecordingStarted();
+                            }
+                            @Override
+                            public void onConfigureFailed(CameraCaptureSession session) {
+                                Log.e(TAG, "record session configure failed");
+                                mr.release();
+                            }
+                        }, mainHandler);
+
+            } catch (Exception e) {
+                Log.e(TAG, "startRecording failed", e);
+            }
+        });
     }
 
     public void stopRecording() {
-        stopRecordingInternal();
+        runOnMain(this::stopRecordingInternal);
     }
 
     private void stopRecordingInternal() {
@@ -265,11 +350,7 @@ public class DashcamService extends Service {
         isRecording = false;
 
         if (mediaRecorder != null) {
-            try {
-                mediaRecorder.stop();
-            } catch (Exception e) {
-                Log.e(TAG, "MediaRecorder stop failed", e);
-            }
+            try { mediaRecorder.stop(); } catch (Exception e) {}
             mediaRecorder.release();
             mediaRecorder = null;
         }
@@ -282,18 +363,16 @@ public class DashcamService extends Service {
                 values.put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4");
                 values.put(MediaStore.MediaColumns.DATA, currentFilePath);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    String relativePath = Environment.DIRECTORY_MOVIES + "/" +
+                    String rp = Environment.DIRECTORY_MOVIES + "/" +
                             (currentSubDir != null && !currentSubDir.isEmpty() ? currentSubDir : "Dashcam");
-                    values.put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath);
+                    values.put(MediaStore.MediaColumns.RELATIVE_PATH, rp);
                     values.put(MediaStore.MediaColumns.IS_PENDING, 0);
                 }
                 try {
                     Uri uri = getContentResolver().insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values);
                     if (cameraStateListener != null && uri != null)
                         cameraStateListener.onRecordingStopped(uri.toString());
-                } catch (Exception e) {
-                    Log.e(TAG, "MediaStore insert failed", e);
-                }
+                } catch (Exception e) {}
             }
         } else if (currentFilePath != null && currentFilePath.startsWith("content://")) {
             try {
@@ -307,75 +386,98 @@ public class DashcamService extends Service {
         }
 
         currentFilePath = null;
-
-        updateCameraSession();
+        closeCaptureSession();
+        startPreviewSession();
         updateNotification("运行中");
     }
 
-    private void updateCameraSession() {
-        if (cameraDevice == null) return;
-        closeCaptureSession();
+    // ========== Photo capture ==========
 
-        try {
-            List<Surface> surfaces = new ArrayList<>();
+    public void takePhoto() {
+        runOnMain(() -> {
+            if (cameraDevice == null || captureSession == null) return;
+            try {
+                int w = previewSize.getWidth();
+                int h = previewSize.getHeight();
 
-            if (isRecording && mediaRecorder != null) {
-                Surface recorderSurface = mediaRecorder.getSurface();
-                if (recorderSurface != null && recorderSurface.isValid()) {
-                    surfaces.add(recorderSurface);
-                }
-            }
+                ImageReader reader = ImageReader.newInstance(w, h, ImageFormat.JPEG, 1);
+                final Surface photoSurface = reader.getSurface();
 
-            if (previewSurface != null && previewSurface.isValid()) {
-                surfaces.add(previewSurface);
-            }
+                CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+                builder.addTarget(photoSurface);
+                builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                builder.set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation);
 
-            if (surfaces.isEmpty()) return;
+                final String ts = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
 
-            int template = isRecording ? CameraDevice.TEMPLATE_RECORD : CameraDevice.TEMPLATE_PREVIEW;
-            previewRequestBuilder = cameraDevice.createCaptureRequest(template);
-            for (Surface s : surfaces) {
-                previewRequestBuilder.addTarget(s);
-            }
-            previewRequestBuilder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                reader.setOnImageAvailableListener(r -> {
+                    try (Image image = r.acquireLatestImage()) {
+                        if (image == null) return;
+                        ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+                        byte[] bytes = new byte[buffer.remaining()];
+                        buffer.get(bytes);
 
-            cameraDevice.createCaptureSession(surfaces,
-                    new CameraCaptureSession.StateCallback() {
-                        @Override
-                        public void onConfigured(CameraCaptureSession session) {
-                            captureSession = session;
-                            try {
-                                captureSession.setRepeatingRequest(previewRequestBuilder.build(), null, mainHandler);
-                            } catch (Exception e) {
-                                Log.e(TAG, "updateCameraSession setRepeatingRequest failed", e);
+                        String fileName = "photo_" + ts + ".jpg";
+                        String mimeType = "image/jpeg";
+
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            String rp = Environment.DIRECTORY_PICTURES + "/" +
+                                    (currentSubDir != null && !currentSubDir.isEmpty() ? currentSubDir : "Dashcam");
+                            ContentValues v = new ContentValues();
+                            v.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                            v.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+                            v.put(MediaStore.MediaColumns.RELATIVE_PATH, rp);
+                            v.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                            Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                            if (uri != null) {
+                                OutputStream os = getContentResolver().openOutputStream(uri);
+                                if (os != null) { os.write(bytes); os.close(); }
+                                v.clear();
+                                v.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                                getContentResolver().update(uri, v, null, null);
                             }
-                            if (isRecording && mediaRecorder != null && !recorderStarted) {
-                                recorderStarted = true;
-                                try {
-                                    mediaRecorder.start();
-                                } catch (Exception e) {
-                                    Log.e(TAG, "mediaRecorder.start failed", e);
-                                }
-                                updateNotification("⏺ 录像中");
-                                if (cameraStateListener != null)
-                                    cameraStateListener.onRecordingStarted();
-                            }
+                        } else {
+                            File dir = new File(Environment.getExternalStoragePublicDirectory(
+                                    Environment.DIRECTORY_PICTURES), currentSubDir);
+                            if (!dir.exists()) dir.mkdirs();
+                            File f = new File(dir, fileName);
+                            FileOutputStream fos = new FileOutputStream(f);
+                            fos.write(bytes);
+                            fos.close();
+
+                            ContentValues v = new ContentValues();
+                            v.put(MediaStore.MediaColumns.DISPLAY_NAME, fileName);
+                            v.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+                            v.put(MediaStore.MediaColumns.DATA, f.getAbsolutePath());
+                            getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
                         }
-                        @Override
-                        public void onConfigureFailed(CameraCaptureSession session) {
-                            Log.e(TAG, "updateCameraSession configure failed");
-                            if (isRecording) {
-                                isRecording = false;
-                                try { mediaRecorder.release(); } catch (Exception e) {}
-                                mediaRecorder = null;
-                            }
-                        }
-                    }, mainHandler);
+                    } catch (Exception e) {
+                        Log.e(TAG, "photo save failed", e);
+                    }
+                    reader.close();
+                }, mainHandler);
 
-        } catch (Exception e) {
-            Log.e(TAG, "updateCameraSession failed", e);
-        }
+                // Stop repeating, capture single, then resume
+                captureSession.stopRepeating();
+                captureSession.capture(builder.build(), new CameraCaptureSession.CaptureCallback() {
+                    @Override
+                    public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
+                        try {
+                            session.setRepeatingRequest(
+                                    captureSession.getDevice().createCaptureRequest(
+                                            isRecording ? CameraDevice.TEMPLATE_RECORD : CameraDevice.TEMPLATE_PREVIEW)
+                                            .build(), null, mainHandler);
+                        } catch (Exception e) {}
+                    }
+                }, mainHandler);
+
+            } catch (Exception e) {
+                Log.e(TAG, "takePhoto failed", e);
+            }
+        });
     }
+
+    // ========== Utility ==========
 
     private void closeCaptureSession() {
         if (captureSession != null) {
@@ -395,18 +497,20 @@ public class DashcamService extends Service {
     }
 
     public void switchCamera() {
-        boolean wasRecording = isRecording;
-        String dirType = currentDirType;
-        String subDir = currentSubDir;
-        if (wasRecording) stopRecordingInternal();
-        closeCamera();
-        cameraFacing = cameraFacing == CameraCharacteristics.LENS_FACING_BACK
-                ? CameraCharacteristics.LENS_FACING_FRONT
-                : CameraCharacteristics.LENS_FACING_BACK;
-        doOpenCamera();
-        if (wasRecording) {
-            mainHandler.postDelayed(() -> startRecording(dirType, subDir), 600);
-        }
+        runOnMain(() -> {
+            boolean wasRecording = isRecording;
+            String dirType = currentDirType;
+            String subDir = currentSubDir;
+            if (wasRecording) stopRecordingInternal();
+            closeCamera();
+            cameraFacing = cameraFacing == CameraCharacteristics.LENS_FACING_BACK
+                    ? CameraCharacteristics.LENS_FACING_FRONT
+                    : CameraCharacteristics.LENS_FACING_BACK;
+            doOpenCamera();
+            if (wasRecording) {
+                mainHandler.postDelayed(() -> startRecording(dirType, subDir), 600);
+            }
+        });
     }
 
     public boolean isRecording() { return isRecording; }
