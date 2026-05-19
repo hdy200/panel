@@ -79,6 +79,8 @@ public class MainActivity extends Activity {
     private String currentSaveUri;
     private String subDir = "Dashcam";
     private boolean cameraReady;
+    private boolean permissionsOk;
+    private boolean surfaceOk;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Runnable clockTick = new Runnable() {
@@ -159,9 +161,17 @@ public class MainActivity extends Activity {
     }
 
     private void start() {
+        permissionsOk = true;
         startGPS();
         mainHandler.post(clockTick);
         mainHandler.post(overlayTick);
+        tryOpenCamera();
+    }
+
+    private void tryOpenCamera() {
+        if (permissionsOk && surfaceOk && previewSurface != null && previewSurface.isValid()) {
+            openCamera();
+        }
     }
 
     // ========== TextureView Surface ==========
@@ -169,13 +179,15 @@ public class MainActivity extends Activity {
     private final TextureView.SurfaceTextureListener surfaceListener = new TextureView.SurfaceTextureListener() {
         @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int h) {
             previewSurface = new Surface(st);
-            openCamera();
+            surfaceOk = true;
+            tryOpenCamera();
         }
         @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int w, int h) {
             previewSurface = new Surface(st);
         }
         @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
             previewSurface = null;
+            surfaceOk = false;
             closeCamera();
             return false;
         }
@@ -495,7 +507,7 @@ public class MainActivity extends Activity {
                 lngDisplay.setText(String.format(Locale.US, "%.6f", currentLng));
                 speedDisplay.setText(String.valueOf(Math.round(currentSpeed)));
                 gpsText.setText("GPS 已定位");
-                gpsIndicator.setBackgroundResource(android.R.drawable.presence_online);
+                gpsIndicator.setBackgroundColor(0xff34c759);
             });
         }
         @Override public void onStatusChanged(String p, int s, Bundle b) {}
@@ -503,7 +515,7 @@ public class MainActivity extends Activity {
         @Override public void onProviderDisabled(String p) {
             runOnUiThread(() -> {
                 gpsText.setText("GPS 已关闭");
-                gpsIndicator.setBackgroundResource(android.R.drawable.presence_offline);
+                gpsIndicator.setBackgroundColor(0xffff3b30);
             });
         }
     };
