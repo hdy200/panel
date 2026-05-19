@@ -13,10 +13,12 @@ import android.graphics.SurfaceTexture;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.util.DisplayMetrics;
 import android.util.Size;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.GeolocationPermissions;
 import android.webkit.PermissionRequest;
@@ -114,6 +116,10 @@ public class MainActivity extends Activity {
             @Override
             public void onSurfaceTextureAvailable(SurfaceTexture st, int width, int height) {
                 surfaceReady = true;
+                ViewGroup.LayoutParams lp = textureView.getLayoutParams();
+                DisplayMetrics dm = getResources().getDisplayMetrics();
+                lp.height = (int)(dm.heightPixels * 0.35);
+                textureView.setLayoutParams(lp);
                 if (serviceBound && dashcamService != null) {
                     dashcamService.setPreviewSurface(new Surface(st));
                     if (!cameraOpened) openCamera();

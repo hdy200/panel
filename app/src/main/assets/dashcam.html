@@ -354,7 +354,8 @@ function startGPS() {
 }
 
 function takePhoto() {
-  showToast('📸 拍照功能 (开发中)', 3000);
+  if (window.Android) Android.takePhoto();
+  showToast('📸 拍照中...', 2000);
 }
 
 function toggleRecord() {
@@ -363,33 +364,12 @@ function toggleRecord() {
     return;
   }
   if (recording) {
-    var result = Android.stopRecording();
-    if (result === 'ok') {
-      recording = false;
-      clearInterval(recTimer); recTimer = null;
-      recStartTime = null;
-      recTime.textContent = '已停止';
-      setTimeout(function () { recTime.textContent = '00:00'; }, 2000);
-      recordBtn.className = 'btn-record stopped';
-      recordLabel.textContent = '开始录像';
-      recDot.classList.remove('active');
-      recIndicator.textContent = '待机';
-      showToast('✅ 录像已保存', 3000);
-    }
+    Android.stopRecording();
+    showToast('⏹ 正在停止录像...', 2000);
   } else {
     var cfg = getSaveConfig();
-    var result = Android.startRecording(cfg.dirType, cfg.subDir);
-    if (result === 'ok') {
-      recording = true;
-      recStartTime = Date.now();
-      recTimer = setInterval(updateRecTime, 200);
-      recordBtn.className = 'btn-record recording';
-      recordLabel.textContent = '停止录像';
-      recDot.classList.add('active');
-      recIndicator.textContent = '⏺ 录像中';
-    } else {
-      showToast('❌ 启动录像失败: ' + result, 5000);
-    }
+    Android.startRecording(cfg.dirType, cfg.subDir);
+    showToast('⏳ 正在启动录像...', 2000);
   }
 }
 
@@ -415,7 +395,6 @@ function autoRestart() {
   Android.stopRecording();
   setTimeout(function () {
     Android.startRecording(cfg.dirType, cfg.subDir);
-    recStartTime = Date.now();
   }, 500);
 }
 
