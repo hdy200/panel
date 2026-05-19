@@ -252,7 +252,9 @@ public class DashcamService extends Service {
         });
     }
 
-    // ========== Recording ==========
+    // ========== Recording (fixed size 1280x720) ==========
+
+    private Size recordSize = new Size(1280, 720);
 
     public void startRecording(String dirType, String subDir) {
         runOnMain(() -> {
@@ -260,16 +262,16 @@ public class DashcamService extends Service {
             currentDirType = dirType != null ? dirType : "MOVIES";
             currentSubDir = subDir != null && !subDir.isEmpty() ? subDir : "Dashcam";
 
-            try {
-                closeCaptureSession();
+            closeCaptureSession();
 
+            try {
                 MediaRecorder mr = new MediaRecorder();
                 mr.setVideoSource(MediaRecorder.VideoSource.SURFACE);
                 mr.setAudioSource(MediaRecorder.AudioSource.MIC);
                 mr.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
                 mr.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
                 mr.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-                mr.setVideoSize(previewSize.getWidth(), previewSize.getHeight());
+                mr.setVideoSize(recordSize.getWidth(), recordSize.getHeight());
                 mr.setVideoFrameRate(30);
                 mr.setVideoEncodingBitRate(5000000);
                 mr.setAudioSamplingRate(44100);
@@ -289,7 +291,7 @@ public class DashcamService extends Service {
                     if (uri != null) {
                         currentFilePath = uri.toString();
                         mr.setOutputFile(getContentResolver().openFileDescriptor(uri, "w").getFileDescriptor());
-                    } else { return; }
+                    } else { startPreviewSession(); return; }
                 } else {
                     File movieDir = new File(Environment.getExternalStoragePublicDirectory(
                             Environment.DIRECTORY_MOVIES), currentSubDir);
@@ -332,11 +334,14 @@ public class DashcamService extends Service {
                             public void onConfigureFailed(CameraCaptureSession session) {
                                 Log.e(TAG, "record session configure failed");
                                 mr.release();
+                                isRecording = false;
+                                startPreviewSession();
                             }
                         }, mainHandler);
 
             } catch (Exception e) {
                 Log.e(TAG, "startRecording failed", e);
+                startPreviewSession();
             }
         });
     }
@@ -395,12 +400,10 @@ public class DashcamService extends Service {
 
     public void takePhoto() {
         runOnMain(() -> {
-            if (cameraDevice == null || captureSession == null) return;
+            if (cameraDevice == null) return;
+            if (captureSession == null) { startPreviewSession(); return; }
             try {
-                int w = previewSize.getWidth();
-                int h = previewSize.getHeight();
-
-                ImageReader reader = ImageReader.newInstance(w, h, ImageFormat.JPEG, 1);
+                ImageReader reader = ImageReader.newInstance(recordSize.getWidth(), recordSize.getHeight(), ImageFormat.JPEG, 1);
                 final Surface photoSurface = reader.getSurface();
 
                 CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
@@ -457,24 +460,50 @@ public class DashcamService extends Service {
                     reader.close();
                 }, mainHandler);
 
-                // Stop repeating, capture single, then resume
                 captureSession.stopRepeating();
                 captureSession.capture(builder.build(), new CameraCaptureSession.CaptureCallback() {
                     @Override
                     public void onCaptureCompleted(CameraCaptureSession session, CaptureRequest request, TotalCaptureResult result) {
-                        try {
-                            session.setRepeatingRequest(
-                                    captureSession.getDevice().createCaptureRequest(
-                                            isRecording ? CameraDevice.TEMPLATE_RECORD : CameraDevice.TEMPLATE_PREVIEW)
-                                            .build(), null, mainHandler);
-                        } catch (Exception e) {}
+                        resumeAfterPhoto();
                     }
                 }, mainHandler);
 
             } catch (Exception e) {
                 Log.e(TAG, "takePhoto failed", e);
+                resumeAfterPhoto();
             }
         });
+    }
+
+    private void resumeAfterPhoto() {
+        if (cameraDevice == null) return;
+        if (captureSession == null) return;
+        try {
+            closeCaptureSession();
+            int template = isRecording ? CameraDevice.TEMPLATE_RECORD : CameraDevice.TEMPLATE_PREVIEW;
+            CaptureRequest.Builder builder = cameraDevice.createCaptureRequest(template);
+            List<Surface> targets = new ArrayList<>();
+            if (isRecording && mediaRecorder != null) {
+                Surface rs = mediaRecorder.getSurface();
+                if (rs != null && rs.isValid()) { targets.add(rs); builder.addTarget(rs); }
+            }
+            if (previewSurface != null && previewSurface.isValid()) { targets.add(previewSurface); builder.addTarget(previewSurface); }
+            if (targets.isEmpty()) return;
+            builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+            cameraDevice.createCaptureSession(targets, new CameraCaptureSession.StateCallback() {
+                @Override
+                public void onConfigured(CameraCaptureSession session) {
+                    captureSession = session;
+                    try { session.setRepeatingRequest(builder.build(), null, mainHandler); } catch (Exception e) {}
+                }
+                @Override
+                public void onConfigureFailed(CameraCaptureSession session) {
+                    Log.e(TAG, "resume session failed");
+                }
+            }, mainHandler);
+        } catch (Exception e) {
+            Log.e(TAG, "resumeAfterPhoto failed", e);
+        }
     }
 
     // ========== Utility ==========
