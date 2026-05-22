@@ -214,6 +214,14 @@ html, body {
     </select>
     <label>子目录名</label>
     <input type="text" id="subDir" value="Dashcam" placeholder="如 Dashcam" maxlength="60">
+    <label>分段录像时长（分钟）</label>
+    <select id="segmentSelect">
+      <option value="1">1 分钟</option>
+      <option value="2">2 分钟</option>
+      <option value="3">3 分钟</option>
+      <option value="4">4 分钟</option>
+      <option value="5">5 分钟</option>
+    </select>
     <button class="btn-save" id="settingsSave">确定</button>
   </div>
 </div>
@@ -242,6 +250,7 @@ var settingsOverlay = document.getElementById('settingsOverlay');
 var settingsSave = document.getElementById('settingsSave');
 var dirTypeSelect = document.getElementById('dirType');
 var subDirInput = document.getElementById('subDir');
+var segmentSelect = document.getElementById('segmentSelect');
 var cameraError = document.getElementById('cameraError');
 var toast = document.getElementById('toast');
 
@@ -268,10 +277,11 @@ function hideError() {
 var savedConfig = null;
 function getSaveConfig() {
   if (savedConfig) return savedConfig;
-  var dirType = 'PICTURES', subDir = 'Dashcam';
+  var dirType = 'PICTURES', subDir = 'Dashcam', segmentMinutes = 1;
   try { dirType = localStorage.getItem('dashcam_dirType') || 'PICTURES'; } catch (e) {}
   try { subDir = localStorage.getItem('dashcam_subDir') || 'Dashcam'; } catch (e) {}
-  savedConfig = { dirType: dirType, subDir: subDir };
+  try { segmentMinutes = parseInt(localStorage.getItem('dashcam_segmentMinutes')) || 1; } catch (e) {}
+  savedConfig = { dirType: dirType, subDir: subDir, segmentMinutes: Math.min(Math.max(segmentMinutes, 1), 5) };
   return savedConfig;
 }
 function loadSettingsUI() {
@@ -279,16 +289,20 @@ function loadSettingsUI() {
     var cfg = getSaveConfig();
     dirTypeSelect.value = cfg.dirType;
     subDirInput.value = cfg.subDir;
+    segmentSelect.value = String(cfg.segmentMinutes);
   } catch (e) {}
 }
 function saveSettings() {
   try {
+    var seg = Math.min(Math.max(parseInt(segmentSelect.value) || 1, 1), 5);
     savedConfig = {
       dirType: dirTypeSelect.value,
-      subDir: (subDirInput.value || '').trim() || 'Dashcam'
+      subDir: (subDirInput.value || '').trim() || 'Dashcam',
+      segmentMinutes: seg
     };
     localStorage.setItem('dashcam_dirType', savedConfig.dirType);
     localStorage.setItem('dashcam_subDir', savedConfig.subDir);
+    localStorage.setItem('dashcam_segmentMinutes', seg);
   } catch (e) {}
 }
 
@@ -661,7 +675,9 @@ function updateRecTime() {
   var sec = Math.floor((Date.now() - recStartTime) / 1000);
   recTime.textContent =
     String(Math.floor(sec / 60)).padStart(2, '0') + ':' + String(sec % 60).padStart(2, '0');
-  if (sec >= 60) {
+  var cfg = getSaveConfig();
+  var segmentSec = cfg.segmentMinutes * 60;
+  if (sec >= segmentSec) {
     autoRestart = true;
     if (recInterval) { clearInterval(recInterval); recInterval = null; }
     canvasStream = null;
